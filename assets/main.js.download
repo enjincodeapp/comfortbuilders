@@ -1,0 +1,342 @@
+/* =======================================================================
+   CEDARLINE CUSTOM HOMES — interactions
+   ======================================================================= */
+
+const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+
+/* -----------------------------------------------------------------------
+   HERO — scroll-driven build
+   Desktop: canvas WEBP FRAME-SEQUENCE (zero seek latency — video.currentTime
+   scrubbing goes through the browser's async media pipeline and never feels
+   buttery; drawImage paints synchronously with scroll). Fractional cross-blend
+   renders in-between states at full display refresh, so no frame stepping.
+   Mobile: <video> scrub of the portrait encode (verified perfect — unchanged).
+----------------------------------------------------------------------- */
+(function heroScrub() {
+  const hero     = document.getElementById("hero");
+  const video    = document.getElementById("heroVideo");
+  const fallback = document.getElementById("heroFallback");
+  const canvas   = document.getElementById("heroCanvas");
+  const scrim    = document.getElementById("heroScrim");
+  const content  = document.getElementById("heroContent");
+  const cue      = document.getElementById("heroCue");
+  const bar      = document.getElementById("heroBar");
+  const nav      = document.getElementById("nav");
+  if (!hero) return;
+
+  const isMobile = window.matchMedia("(max-width: 720px)").matches;
+  const ctx = (!isMobile && canvas) ? canvas.getContext("2d") : null;
+  const useFrames = !!ctx;
+
+  /* ---- LOADER GATE: hold the page until the build animation is fully in ----
+     Real progress (frames loaded / bytes received). Min display 700ms so a
+     cached revisit still gets a tasteful brand beat; hard release at 25s so a
+     crawling network never wedges the page (loading continues behind, and the
+     nearest-frame / buffered-clamp fallbacks take over). */
+  const loader    = document.getElementById("loader");
+  const loaderBar = document.getElementById("loaderBar");
+  const loaderPct = document.getElementById("loaderPct");
+  const gateStart = performance.now();
+  let gateDone = false;
+
+  function setGate(p) {
+    p = clamp(p, 0, 1);
+    if (loaderBar) loaderBar.style.width = (p * 100).toFixed(1) + "%";
+    if (loaderPct) loaderPct.textContent = Math.round(p * 100);
+    if (p >= 1) finishGate();
+  }
+  function finishGate() {
+    if (gateDone) return;
+    gateDone = true;
+    const wait = Math.max(0, 700 - (performance.now() - gateStart));
+    setTimeout(() => {
+      if (loaderBar) loaderBar.style.width = "100%";
+      if (loaderPct) loaderPct.textContent = "100";
+      if (loader) loader.classList.add("is-done");
+      document.body.classList.remove("is-loading");
+      setTimeout(() => { if (loader) loader.remove(); }, 800);
+    }, wait);
+  }
+  setTimeout(finishGate, 25000); // hard release — never wedge the page
+
+  /* Fetch a video with streamed byte progress, return a blob URL. Guarantees
+     the WHOLE file is local before the first scrub — no mid-scroll buffering. */
+  async function fetchVideoGated(url) {
+    const res = await fetch(url);
+    if (!res.ok || !res.body) throw new Error("fetch failed");
+    const total = +res.headers.get("Content-Length") || 0;
+    const reader = res.body.getReader();
+    const chunks = [];
+    let received = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      received += value.length;
+      setGate(total ? received / total : Math.min(0.95, received / 12e6));
+    }
+    return URL.createObjectURL(new Blob(chunks, { type: "video/mp4" }));
+  }
+
+  /* ---- media source per platform ---- */
+  if (isMobile && video) {
+    // Phones: portrait encode + matching poster (white-band design).
+    video.poster = "assets/hero-poster-mobile.jpg";
+    if (fallback) fallback.src = "assets/hero-poster-mobile.jpg";
+    fetchVideoGated("assets/build_mobile.mp4")
+      .then((blobUrl) => { video.src = blobUrl; video.load(); setGate(1); })
+      .catch(() => { video.src = "assets/build_mobile.mp4"; video.load(); finishGate(); });
+  } else if (!useFrames && video) {
+    // Canvas unsupported (ancient browser): fall back to video scrubbing.
+    fetchVideoGated("assets/build.mp4")
+      .then((blobUrl) => { video.src = blobUrl; video.load(); setGate(1); })
+      .catch(() => { video.src = "assets/build.mp4"; video.load(); finishGate(); });
+  }
+  // Desktop frames path: the <video> never gets a src — zero video download.
+
+  const navH = () => (nav ? nav.offsetHeight || 74 : 74);
+  function setNav() {
+    if (nav) nav.classList.toggle("nav--solid", hero.getBoundingClientRect().bottom <= navH() + 2);
+  }
+  function progress() {
+    const total = hero.offsetHeight - window.innerHeight;
+    const scrolled = clamp(-hero.getBoundingClientRect().top, 0, total);
+    return total > 0 ? scrolled / total : 0;
+  }
+
+  /* =====================================================================
+     FRAME-SEQUENCE ENGINE (desktop)
+     ===================================================================== */
+  const FRAME_COUNT = 226;
+  const framePath = (i) => "assets/frames/f" + String(i + 1).padStart(4, "0") + ".webp";
+  const frames = new Array(FRAME_COUNT);
+  let curIdx = -1, firstDrawn = false, lastDrawnPos = -1, canvasDirty = true;
+
+  function sizeCanvas() {
+    const r = canvas.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = Math.max(1, Math.round(r.width * dpr));
+    const h = Math.max(1, Math.round(r.height * dpr));
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w; canvas.height = h;
+      canvasDirty = true;
+    }
+  }
+
+  const loadedAt = (idx) => {
+    const im = frames[idx];
+    return im && im.complete && im.naturalWidth ? im : null;
+  };
+
+  function paintCover(im, alpha) {
+    const cw = canvas.width, ch = canvas.height, iw = im.naturalWidth, ih = im.naturalHeight;
+    const scale = Math.max(cw / iw, ch / ih);
+    const dw = iw * scale, dh = ih * scale;
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(im, (cw - dw) / 2, (ch - dh) / 2, dw, dh);
+    ctx.globalAlpha = 1;
+  }
+
+  /* Fractional position: paint floor(pos), cross-blend the next frame with the
+     fractional alpha — in-between states render at 60/120Hz, no stepping. */
+  function drawFrame(pos) {
+    pos = clamp(pos, 0, FRAME_COUNT - 1);
+    let i0 = Math.floor(pos);
+    let frac = pos - i0;
+    let a = loadedAt(i0);
+    if (!a) {
+      let j = i0;                       // nearest earlier loaded frame — never blank
+      while (j > 0 && !loadedAt(j)) j--;
+      a = loadedAt(j);
+      if (!a) return;
+      i0 = j; frac = 0;
+    }
+    sizeCanvas();
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    paintCover(a, 1);
+    if (frac > 0.02 && i0 + 1 <= FRAME_COUNT - 1) {
+      const b = loadedAt(i0 + 1);
+      if (b) paintCover(b, frac);
+    }
+    curIdx = i0;
+    canvasDirty = false;
+  }
+
+  function preloadFrames(count) {
+    let settled = 0;
+    const tally = () => { settled++; setGate(settled / count); };
+    for (let i = 0; i < count; i++) {
+      const im = new Image();
+      im.decoding = "async";
+      im.onload = () => {
+        tally();
+        if (!firstDrawn) { firstDrawn = true; canvas.classList.add("is-active"); drawFrame(0); }
+        else if (i === curIdx || i === curIdx + 1) canvasDirty = true; // refine active frame
+      };
+      im.onerror = tally; // a missing frame must never wedge the gate
+      im.src = framePath(i);
+      frames[i] = im;
+    }
+  }
+
+  /* ---- reduced motion: first frame only, no scrub loop, no gate ---- */
+  if (reduceMotion) {
+    finishGate();
+    if (useFrames) {
+      preloadFrames(1);
+    } else if (video) {
+      const showFirst = () => { try { video.pause(); video.currentTime = 0.001; } catch (e) {} };
+      if (video.readyState >= 1) showFirst(); else video.addEventListener("loadedmetadata", showFirst);
+    }
+    window.addEventListener("scroll", setNav, { passive: true });
+    setNav();
+    return;
+  }
+
+  if (useFrames) preloadFrames(FRAME_COUNT);
+
+  /* =====================================================================
+     VIDEO ENGINE (mobile + canvas-unsupported fallback) — unchanged
+     ===================================================================== */
+  let duration = 0, shown = 0, seeking = false, firstFrameDone = false;
+
+  if (!useFrames && video) {
+    const setDuration = () => {
+      if (video.duration && isFinite(video.duration) && video.duration > 0) {
+        duration = video.duration;
+        video.classList.add("is-active");
+        if (!firstFrameDone) {
+          firstFrameDone = true;
+          try { video.pause(); video.currentTime = 0.001; } catch (e) {}
+        }
+      }
+    };
+    video.addEventListener("loadedmetadata", setDuration);
+    video.addEventListener("durationchange", setDuration);
+    if (video.readyState >= 1) setDuration();
+
+    video.addEventListener("seeking", () => { seeking = true; });
+    video.addEventListener("seeked",  () => { seeking = false; });
+
+    // iOS/Safari: a muted video won't expose decoded frames for seeking until
+    // it has been "played" once. Prime on the first user gesture.
+    let primed = false;
+    window.__heroPrimeAt = 0;
+    function prime() {
+      if (primed) return;
+      primed = true;
+      window.__heroPrimeAt = performance.now();
+      const stop = () => { try { video.pause(); } catch (e) {} };
+      const p = video.play();
+      if (p && p.then) p.then(stop).catch(() => { primed = false; });
+      else stop();
+      setTimeout(stop, 300); // belt & braces: iOS can drop a pause() issued mid-seek
+    }
+    ["touchstart", "touchmove", "wheel", "pointerdown", "keydown"].forEach((ev) =>
+      window.addEventListener(ev, prime, { passive: true })
+    );
+  }
+
+  /* =====================================================================
+     UNIFIED rAF LOOP
+     ===================================================================== */
+  let shownP = 0;
+
+  function raf() {
+    const p = progress();
+
+    // Headline + scrim fade out over the first ~18% so the build reveals clean.
+    const fade = 1 - clamp(p / 0.18, 0, 1);
+    if (content) { content.style.opacity = fade.toFixed(3); content.style.visibility = fade <= 0.001 ? "hidden" : "visible"; }
+    if (scrim)   scrim.style.opacity = (0.15 + 0.85 * fade).toFixed(3);
+    if (cue)     cue.style.opacity = p > 0.04 ? "0" : "1";
+    if (bar)     bar.style.width = (p * 100).toFixed(2) + "%";
+    setNav();
+
+    if (useFrames) {
+      // eased glide toward the scroll target, drawn synchronously — butter
+      shownP += (p - shownP) * 0.16;
+      if (Math.abs(p - shownP) < 0.0004) shownP = p;
+      const target = shownP * (FRAME_COUNT - 1);
+      if (canvasDirty || Math.abs(target - lastDrawnPos) > 0.002) {
+        drawFrame(target);
+        lastDrawnPos = target;
+      }
+    } else if (video && duration > 0) {
+      let wanted = p * (duration - 0.05);
+      // Never seek past the buffered edge — clamp so cold loads never freeze.
+      const br = video.buffered;
+      if (br.length) {
+        const maxEnd = br.end(br.length - 1) - 0.05;
+        if (wanted > maxEnd) wanted = Math.max(0, maxEnd);
+      }
+      if (Math.abs(wanted - shown) > 0.6) shown = wanted;
+      else { shown += (wanted - shown) * 0.2; if (Math.abs(wanted - shown) < 0.004) shown = wanted; }
+      if (!seeking && video.readyState >= 2 && Math.abs(video.currentTime - shown) > 0.008) {
+        try { video.currentTime = shown; } catch (e) {}
+      }
+      // Watchdog: a scrub video must NEVER free-run (iOS can ignore a pause()
+      // issued during a pending seek).
+      const pAt = window.__heroPrimeAt || 0;
+      if (!video.paused && (!pAt || performance.now() - pAt > 350)) {
+        try { video.pause(); } catch (e) {}
+      }
+    } else if (fallback && !useFrames) {
+      fallback.style.transform = `scale(${(1.08 - p * 0.08).toFixed(4)})`;
+    }
+
+    requestAnimationFrame(raf);
+  }
+  requestAnimationFrame(raf);
+})();
+
+/* -----------------------------------------------------------------------
+   REVEAL ON SCROLL
+----------------------------------------------------------------------- */
+const io = new IntersectionObserver((entries) => {
+  entries.forEach((e) => {
+    if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
+  });
+}, { threshold: 0.14, rootMargin: "0px 0px -8% 0px" });
+document.querySelectorAll(".reveal").forEach((el) => io.observe(el));
+
+/* -----------------------------------------------------------------------
+   LIQUID-GLASS POINTER SHEEN (cards)
+----------------------------------------------------------------------- */
+document.querySelectorAll(".card").forEach((card) => {
+  card.addEventListener("pointermove", (e) => {
+    const r = card.getBoundingClientRect();
+    card.style.setProperty("--mx", `${((e.clientX - r.left) / r.width) * 100}%`);
+    card.style.setProperty("--my", `${((e.clientY - r.top) / r.height) * 100}%`);
+  });
+});
+
+/* -----------------------------------------------------------------------
+   STAT COUNT-UP
+----------------------------------------------------------------------- */
+const statIO = new IntersectionObserver((entries) => {
+  entries.forEach((e) => {
+    if (!e.isIntersecting) return;
+    const el = e.target;
+    const target = parseInt(el.dataset.count, 10);
+    const dur = 1100;
+    let started = null;
+    function step(now) {
+      if (started === null) started = now;
+      const t = clamp((now - started) / dur, 0, 1);
+      const eased = 1 - Math.pow(1 - t, 3);
+      el.textContent = Math.round(eased * target).toString();
+      if (t < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+    statIO.unobserve(el);
+  });
+}, { threshold: 0.6 });
+document.querySelectorAll(".stat__num").forEach((el) => statIO.observe(el));
+
+/* -----------------------------------------------------------------------
+   MISC
+----------------------------------------------------------------------- */
+const yr = document.getElementById("yr");
+if (yr) yr.textContent = new Date().getFullYear();
