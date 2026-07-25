@@ -318,7 +318,7 @@ body.is-loading {
 }
 
 .brand__logo {
-  height: 168px;
+  height: 67px;
   width: auto;
   object-fit: contain;
   display: block;
@@ -431,7 +431,6 @@ body.is-loading {
   -webkit-backdrop-filter: saturate(180%) blur(20px);
   border-bottom-color: var(--line);
   box-shadow: 0 8px 30px -20px rgba(20, 18, 16, .4);
-  height: 125px;
 }
 
 .nav--solid .brand {
@@ -1394,8 +1393,9 @@ body.is-loading {
   .brand__logo--black {
     display: block !important;
     opacity: 1 !important;
-    height: 38px !important;
+    height: 40px !important;
     width: auto !important;
+    margin-bottom: 10px;
   }
 
   /* Header bar on mobile */
@@ -1819,6 +1819,54 @@ body.modal-open {
 }
 
 /* =====================================================================
+   WHATSAPP WIDGET — keep the floating bubble out of the document flow
+   ===================================================================== */
+.wa-widget-wrap {
+  position: fixed !important;
+  bottom: 0;
+  right: 0;
+  z-index: 998;
+  pointer-events: none;
+  width: 0;
+  height: 0;
+  overflow: visible !important;
+}
+
+.wa-widget-wrap > * {
+  pointer-events: auto;
+}
+
+/* Ensure the widget container itself doesn't take layout space but lets children overflow */
+.wa-widget-wrap div[class^="elfsight-app"] {
+  width: 0 !important;
+  height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: visible !important;
+}
+
+@media (max-width: 720px) {
+  .wa-widget-wrap {
+    right: 12px !important;
+    bottom: 12px !important;
+  }
+}
+
+/* Hide Elfsight owner-only toolbars/panels and other elements that cause bottom spacing/whitespace */
+.eapps-widget-toolbar,
+.eapps-widget-show-toolbar,
+.elfsight-app-owner,
+[class*="eapps-widget-toolbar"],
+[class*="eapps-widget-show-toolbar"] {
+  display: none !important;
+  height: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+}
+
+/* =====================================================================
    LOCATION & DARK MAP SECTION
    ===================================================================== */
 .location-section {
@@ -1974,7 +2022,16 @@ body.modal-open {
 
 
 
-      margin-top: auto;
+  margin-top: auto;
 
 
 }
+
+
+
+
+
+
+
+
+
